@@ -1,0 +1,40 @@
+name: InterviewAI CI
+on:
+    push:
+        branches: [ main ]
+    pull_request:
+        branches: [ main ]
+
+
+jobs:
+    build:
+        runs-on: ubuntu-latest
+        steps:
+        - name: Checkout repository
+          uses: actions/checkout@v3
+
+        - name: Set up Node.js
+          uses: actions/setup-node@v3
+          with:
+            node-version: 18
+
+
+        - name: Install backend deps
+          run: |
+            cd backend
+            npm install
+
+        - name: Install frontend deps
+          run: |
+            cd frontend
+            npm install
+
+        - name: Run backend lint    
+          run: |
+            cd backend
+            npm run lint || true
+
+        - name: Run frontend lint
+          run: |
+            cd frontend
+            npm run lint || true
