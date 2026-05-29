@@ -75,14 +75,14 @@ const seed = async () => {
   try {
     // Connect and sync schema
     await sequelize.authenticate();
-    console.log("✅ Database connected");
+    console.log(" Database connected");
     await sequelize.sync({ alter: true });
-    console.log("✅ Schema synced\n");
+    console.log(" Schema synced\n");
 
     // ── 1. Institution ──────────────────────────────────────────────
     let institution = await InstitutionSQL.findOne({ where: { name: INSTITUTION_NAME } });
     if (institution) {
-      console.log(`ℹ️  Institution "${INSTITUTION_NAME}" already exists (id=${institution.id})`);
+      console.log(`ℹ  Institution "${INSTITUTION_NAME}" already exists (id=${institution.id})`);
     } else {
       institution = await InstitutionSQL.create({
         name: INSTITUTION_NAME,
@@ -92,14 +92,14 @@ const seed = async () => {
         studentsRegistered: 0,
         approvalStatus: "ACTIVE",
       });
-      console.log(`✅ Institution created: ${institution.name}  (domain: ${INSTITUTION_DOMAIN})`);
+      console.log(` Institution created: ${institution.name}  (domain: ${INSTITUTION_DOMAIN})`);
     }
 
     // ── 2. Users ────────────────────────────────────────────────────
     for (const u of USERS) {
       const existing = await UserSQL.findOne({ where: { email: u.email } });
       if (existing) {
-        console.log(`ℹ️  User "${u.email}" already exists — skipping`);
+        console.log(` User "${u.email}" already exists — skipping`);
         continue;
       }
 
@@ -123,7 +123,7 @@ const seed = async () => {
         interviewProfile: u.interviewProfile,
       });
 
-      console.log(`✅ User created: ${u.email}  (accountType: ${u.accountType})`);
+      console.log(`User created: ${u.email}  (accountType: ${u.accountType})`);
 
       // If admin — create Admin record too
       if (u.accountType === "admin") {
@@ -152,7 +152,7 @@ const seed = async () => {
     console.log("  🎓 Student    — student@test.edu       / Student@123");
     console.log("─────────────────────────────────────────────\n");
   } catch (err) {
-    console.error("❌ Seeding failed:", err.message || err);
+    console.error("Seeding failed:", err.message || err);
     console.error(err);
     process.exitCode = 1;
   } finally {

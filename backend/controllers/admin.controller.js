@@ -1,5 +1,5 @@
-import { User, Institution, InterviewSession } from "../db/index.js";
-import { Op } from "sequelize";
+import { User, Institution, InterviewSession, sequelize } from "../db/index.js";
+import { Op, fn, col } from "sequelize";
 
 export const getPlatformStats = async (req, res) => {
   try {
@@ -92,5 +92,63 @@ export const listInstitutions = async (req, res) => {
     res.json(institutions);
   } catch (err) {
     res.status(500).json({ message: "Failed to list institutions", error: err.message });
+  }
+};
+// ── User management (RBAC) ───────────────────────────────────────────────
+
+export const listUsers = async (req, res) => {
+  try {
+    const users = await User.findAll({
+      attributes: { exclude: ["password", "totpSecret"] },
+      order: [["createdAt", "DESC"]],
+    });
+
+    // Attach interview counts
+    const counts = await InterviewSession.findAll({
+      attributes: ["userId", [fn("COUNT", col("id")), "cnt"]],
+      group: ["userId"],
+      raw: true,
+    }).catch(() => []);
+
+    const countMap = {};
+    counts.forEach((c) => { countMap[c.userId] = Number(c.cnt); });
+
+    const result = users.map((u) => ({
+      ...u.toJSON(),
+      interviewCount: countMap[u.id] || 0,
+    }));
+
+    res.json({ users: result });
+  } catch (err) {
+    res.status(500).json({ message: "Failed to list users", error: err.message });
+  }
+};
+
+export const updateUserRole = async (req, res) => {
+  const { userId } = req.params;
+  const { accountType } = req.body;
+  const VALID = ["student", "professional", "admin", "institution_admin", "guest"];
+  if (!VALID.includes(accountType))
+    return res.status(400).json({ message: `Invalid role. Allowed: ${VALID.join(", ")}` });
+
+  try {
+    const user = await User.findByPk(userId);
+    if (!user) return res.status(404).json({ message: "User not found" });
+    await user.update({ accountType });
+    res.json({ message: "Role updated", accountType });
+  } catch (err) {
+    res.status(500).json({ message: "Failed to update role", error: err.message });
+  }
+};
+
+export const deleteUser = async (req, res) => {
+  const { userId } = req.params;
+  try {
+    const user = await User.findByPk(userId);
+    if (!user) return res.status(404).json({ message: "User not found" });
+    await user.destroy();
+    res.json({ message: "User deleted" });
+  } catch (err) {
+    res.status(500).json({ message: "Failed to delete user", error: err.message });
   }
 };

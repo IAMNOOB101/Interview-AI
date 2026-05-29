@@ -1,10 +1,15 @@
 import React, { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useLocation } from "react-router-dom";
 import "./Navbar.css";
+
+const AUTH_PAGES = ["/login", "/signup"];
 
 const Navbar = () => {
   const navigate = useNavigate();
+  const location = useLocation();
   const [menuOpen, setMenuOpen] = useState(false);
+
+  const isAuthPage = AUTH_PAGES.includes(location.pathname);
 
   let user = null;
   try {
@@ -39,30 +44,33 @@ const Navbar = () => {
       </button>
 
       <div className={`nav-links ${menuOpen ? "open" : ""}`} onClick={() => setMenuOpen(false)}>
-        {!user && (
+        {/* On auth pages: never show logout / user greeting */}
+        {!isAuthPage && !user && (
           <>
             <Link to="/login" className="nav-link">Login</Link>
             <Link to="/signup" className="nav-link nav-link-cta">Get Started</Link>
           </>
         )}
 
-        {user && user.accountType !== "admin" && (
-          <>
-            <Link to="/dashboard" className="nav-link">Dashboard</Link>
-            <Link to="/interview" className="nav-link">Start Interview</Link>
-          </>
-        )}
-
-        {user && user.accountType === "admin" && (
-          <>
-            <Link to="/admin" className="nav-link">Admin Panel</Link>
-          </>
-        )}
-
-        {user && (
+        {/* User Profile Section - Merged */}
+        {!isAuthPage && user && (
           <div className="nav-user">
-            <span className="nav-greeting">Hi, {user.firstName || "User"}</span>
-            <button className="btn-logout" onClick={logout}>Logout</button>
+            <button
+              onClick={() => navigate("/profile")}
+              className="user-profile-btn"
+              title="Click to view profile"
+            >
+              <div className="user-avatar">
+                {user.firstName?.charAt(0)}{user.lastName?.charAt(0)}
+              </div>
+              <div className="user-info">
+                <span className="user-name">Hi, {user.firstName}! 👋</span>
+                <span className="user-email">{user.email}</span>
+              </div>
+            </button>
+            <button className="btn-logout" onClick={logout}>
+              Logout
+            </button>
           </div>
         )}
       </div>

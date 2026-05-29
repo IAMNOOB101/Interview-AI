@@ -73,3 +73,22 @@ export const getResume = async (req, res) => {
     res.status(500).json({ message: "Failed to get resume", error: err.message });
   }
 };
+
+// Public endpoint: parse PDF without auth (for signup pre-fill)
+// File is NOT stored to Cloudinary here — only text extracted
+export const parseResumePublic = async (req, res) => {
+  try {
+    const file = req.file;
+    if (!file) return res.status(400).json({ message: "No PDF file provided" });
+    if (file.mimetype !== "application/pdf") return res.status(400).json({ message: "Only PDF files are allowed" });
+
+    // Parse from buffer directly (no Cloudinary upload)
+    const { parseResumeFromBuffer, extractResumeInfo } = await import("../services/resumeParser.js");
+    const text = await parseResumeFromBuffer(file.buffer);
+    const data = extractResumeInfo(text);
+    res.json({ message: "Parsed", data });
+  } catch (err) {
+    console.error("parseResumePublic error:", err);
+    res.status(500).json({ message: "Parse failed", error: err.message });
+  }
+};

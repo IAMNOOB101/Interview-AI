@@ -18,7 +18,10 @@ const ProtectedRoute = ({ children, allowedRoles }) => {
   }
 
   if (allowedRoles && !allowedRoles.includes(user.accountType)) {
-    // Logged in but wrong role — send to dashboard
+    // institution_admin gets own dashboard, others go to /dashboard
+    if (user.accountType === "institution_admin") {
+      return <Navigate to="/institution-admin" replace />;
+    }
     return <Navigate to="/dashboard" replace />;
   }
 

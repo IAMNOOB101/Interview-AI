@@ -13,6 +13,8 @@ import paymentRoutes      from "./routes/payment.routes.js";
 import passwordRoutes     from "./routes/password.routes.js";
 import { errorHandler }   from "./middleware/error.middleware.js";
 import { logger }         from "./middleware/logger.middleware.js";
+import guestRoutes        from "./routes/guest.routes.js";
+import userRoutes from "./routes/user.routes.js";
 
 const app = express();
 
@@ -23,12 +25,14 @@ app.use(cors({
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
-if (process.env.NODE_ENV !== "production") app.use(logger);
+app.use(logger); // Always log: method, route, status, response time
 
 // Routes
 app.use("/api/auth",      authRoutes);
 app.use("/api/auth",      passwordRoutes);
-app.use("/api/interview", sessionRoutes);      // /session/start, /session/submit, /sessions, /report/:id
+app.use("/api/interview", sessionRoutes); // /session/start, /session/submit, /sessions, /report/:id
+app.use("/api/guest", guestRoutes);
+app.use("/api/user", userRoutes); // User
 app.use("/api/interview", historyRoutes);      // /history
 app.use("/api/interview", interviewRoutes);    // /download/:id
 app.use("/api/interview", interviewSetupRoutes); // /setup

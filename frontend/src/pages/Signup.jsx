@@ -1,63 +1,78 @@
 import React, { useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 
-const STEPS = ["Account & Resume", "Profile"];
+const STEPS = ["Account & Resume", "Profile Details", "Setup Authenticator"];
 
 const Signup = () => {
   const navigate = useNavigate();
   const [step, setStep] = useState(0);
   const [form, setForm] = useState({
-    firstName: "",
-    lastName: "",
-    email: "",
-    password: "",
-    accountType: "professional",
-    enrollmentNumber: "",
-    domain: "",
-    role: "",
-    experience: "",
-    desiredSalary: "",
+    firstName: "", lastName: "", email: "", password: "",
+    accountType: "professional", enrollmentNumber: "",
+    domain: "", role: "", experience: "", desiredSalary: "",
+    skills: "", education: "",
   });
   const [resume, setResume] = useState(null);
   const [resumeError, setResumeError] = useState("");
+  const [resumeParsed, setResumeParsed] = useState(false);
+  const [resumeParsing, setResumeParsing] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [totpQr, setTotpQr] = useState(null);
+  const [totpToken, setTotpToken] = useState("");
+  const [totpError, setTotpError] = useState("");
+  const [totpVerifying, setTotpVerifying] = useState(false);
+  const [authToken, setAuthToken] = useState(null); // temp token after register
 
-  const handleChange = (e) =>
-    setForm({ ...form, [e.target.name]: e.target.value });
+  const handleChange = (e) => setForm({ ...form, [e.target.name]: e.target.value });
 
-  const handleResumeChange = (e) => {
+  const handleResumeChange = async (e) => {
     const file = e.target.files?.[0];
-    if (!file) {
-      setResume(null);
-      setResumeError("");
-      return;
-    }
-
-    // Validate PDF
-    if (file.type !== "application/pdf") {
-      setResumeError("Only PDF files are allowed");
-      setResume(null);
-      return;
-    }
-
-    // Validate file size (max 5MB)
-    if (file.size > 5 * 1024 * 1024) {
-      setResumeError("File size must be less than 5MB");
-      setResume(null);
-      return;
-    }
-
+    if (!file) { setResume(null); setResumeError(""); return; }
+    if (file.type !== "application/pdf") { setResumeError("Only PDF files are allowed"); setResume(null); return; }
+    if (file.size > 5 * 1024 * 1024) { setResumeError("File size must be less than 5MB"); setResume(null); return; }
     setResume(file);
     setResumeError("");
+    setResumeParsed(false);
+
+    // Auto-parse resume to fill form fields
+    setResumeParsing(true);
+    try {
+      const fd = new FormData();
+      fd.append("resume", file);
+      const res = await fetch("/api/resume/parse", {
+        method: "POST",
+        body: fd,
+        credentials: "include",
+      });
+      if (res.ok) {
+        const { data } = await res.json();
+        if (data) {
+          setForm((prev) => ({
+            ...prev,
+            firstName: data.firstName || prev.firstName,
+            lastName: data.lastName || prev.lastName,
+            email: data.email || prev.email,
+            skills: data.skills?.join(", ") || prev.skills,
+            experience: data.experience || prev.experience,
+            domain: data.domain || prev.domain,
+            role: data.role || prev.role,
+            education: data.education || prev.education,
+          }));
+          setResumeParsed(true);
+        }
+      }
+    } catch (_) { /* parsing is optional */ }
+    setResumeParsing(false);
   };
 
-  const next = (e) => {
+  const goNext = (e) => {
     e.preventDefault();
     setError("");
     if (!form.firstName || !form.email || !form.password || !form.accountType) {
       return setError("Please fill in all required fields");
     }
+    if (form.password.length < 8) return setError("Password must be at least 8 characters");
     setStep(1);
   };
 
@@ -66,31 +81,32 @@ const Signup = () => {
     setError("");
     setLoading(true);
     try {
-      // Use FormData to support file upload
-      const formData = new FormData();
-      formData.append("firstName", form.firstName);
-      formData.append("lastName", form.lastName);
-      formData.append("email", form.email);
-      formData.append("password", form.password);
-      formData.append("accountType", form.accountType);
-      formData.append("enrollmentNumber", form.enrollmentNumber);
-      formData.append("domain", form.domain);
-      formData.append("role", form.role);
-      formData.append("experience", form.experience);
-      formData.append("desiredSalary", form.desiredSalary);
-
-      if (resume) {
-        formData.append("resume", resume);
-      }
+      const fd = new FormData();
+      Object.entries(form).forEach(([k, v]) => fd.append(k, v));
+      if (resume) fd.append("resume", resume);
 
       const res = await fetch("/api/auth/register", {
         method: "POST",
-        body: formData,
+        body: fd,
         credentials: "include",
       });
       const data = await res.json();
       if (!res.ok) return setError(data.message || "Registration failed");
-      navigate("/login", { state: { message: "Account created! Please login." } });
+
+      // Store temp auth token to call TOTP init
+      setAuthToken(data.token);
+      localStorage.setItem("token", data.token);
+      localStorage.setItem("user", JSON.stringify(data.user));
+
+      // Fetch TOTP QR
+      const totpRes = await fetch("/api/auth/totp/init", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${data.token}` },
+        credentials: "include",
+      });
+      const totpData = await totpRes.json();
+      setTotpQr(totpData.qrCode);
+      setStep(2);
     } catch {
       setError("Network error — please try again");
     } finally {
@@ -98,24 +114,60 @@ const Signup = () => {
     }
   };
 
+  const handleTotpConfirm = async (e) => {
+    e.preventDefault();
+    setTotpError("");
+    setTotpVerifying(true);
+    try {
+      const res = await fetch("/api/auth/totp/confirm", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({ token: totpToken }),
+        credentials: "include",
+      });
+      const data = await res.json();
+      if (!res.ok) return setTotpError(data.message || "Invalid code");
+      // Success — redirect to dashboard
+      navigate("/dashboard", { state: { message: "Account created! 2FA is active." } });
+    } catch {
+      setTotpError("Network error — please try again");
+    } finally {
+      setTotpVerifying(false);
+    }
+  };
+
   return (
     <div className="auth-page">
-      <div className="auth-card" style={{ maxWidth: 480 }}>
+      <div className="auth-card" style={{ maxWidth: 500 }}>
         <div className="auth-header">
           <div className="auth-icon">🚀</div>
           <h1>Create Account</h1>
           <p>Step {step + 1} of {STEPS.length}: <strong>{STEPS[step]}</strong></p>
         </div>
 
-        {/* Step indicator */}
         <div className="step-indicator">
           {STEPS.map((s, i) => (
             <div key={s} className={`step-dot ${i <= step ? "active" : ""}`} />
           ))}
         </div>
 
+        {/* ── Step 0: Account basics + resume ── */}
         {step === 0 && (
-          <form onSubmit={next} className="auth-form">
+          <form onSubmit={goNext} className="auth-form">
+            <div className="form-group">
+              <label>📄 Upload Resume (PDF) — auto-fills your profile</label>
+              <div className="file-input-wrapper">
+                <input type="file" accept=".pdf" onChange={handleResumeChange} style={{ width: "100%" }} />
+              </div>
+              {resumeParsing && <p className="form-hint">⏳ Extracting details from resume…</p>}
+              {resumeParsed && <p className="form-hint" style={{ color: "var(--success)" }}>✅ Resume parsed — fields pre-filled below</p>}
+              {resume && !resumeParsed && !resumeParsing && <p className="form-hint">✓ Selected: {resume.name}</p>}
+              {resumeError && <div className="alert alert-error">{resumeError}</div>}
+            </div>
+
             <div className="form-row-2">
               <div className="form-group">
                 <label>First Name *</label>
@@ -131,10 +183,9 @@ const Signup = () => {
               <label>Email *</label>
               <input name="email" type="email" placeholder="you@example.com" onChange={handleChange} value={form.email} required autoComplete="email" />
             </div>
-
             <div className="form-group">
-              <label>Password *</label>
-              <input name="password" type="password" placeholder="Min. 8 characters" onChange={handleChange} value={form.password} required autoComplete="new-password" />
+              <label>Password * (min. 8 characters)</label>
+              <input name="password" type="password" placeholder="••••••••" onChange={handleChange} value={form.password} required autoComplete="new-password" />
             </div>
 
             <div className="form-group">
@@ -153,39 +204,26 @@ const Signup = () => {
               </div>
             )}
 
-            <div className="form-group">
-              <label>Upload Resume (Optional, PDF only)</label>
-              <div className="file-input-wrapper">
-                <input
-                  type="file"
-                  accept=".pdf"
-                  onChange={handleResumeChange}
-                  style={{ width: "100%" }}
-                />
-              </div>
-              {resume && <p className="form-hint">✓ Selected: {resume.name}</p>}
-              {resumeError && <div className="alert alert-error">{resumeError}</div>}
-              <span className="form-hint">We'll extract your skills, experience, and education from your resume to help tailor your interview questions.</span>
-            </div>
-
             {error && <div className="alert alert-error">{error}</div>}
-
             <button type="submit" className="btn-primary">Next →</button>
           </form>
         )}
 
+        {/* ── Step 1: Profile details ── */}
         {step === 1 && (
           <form onSubmit={handleSubmit} className="auth-form">
             <div className="form-group">
               <label>Target Domain *</label>
               <input name="domain" placeholder="e.g. Software Engineering" onChange={handleChange} value={form.domain} required />
             </div>
-
             <div className="form-group">
               <label>Desired Role *</label>
               <input name="role" placeholder="e.g. Backend Developer" onChange={handleChange} value={form.role} required />
             </div>
-
+            <div className="form-group">
+              <label>Skills (comma-separated)</label>
+              <input name="skills" placeholder="e.g. React, Node.js, SQL" onChange={handleChange} value={form.skills} />
+            </div>
             <div className="form-group">
               <label>Experience Level *</label>
               <select name="experience" onChange={handleChange} value={form.experience} required>
@@ -197,25 +235,65 @@ const Signup = () => {
               </select>
             </div>
 
+            {form.experience === "Fresher" && (
+              <div className="form-group">
+                <label>Education</label>
+                <input name="education" placeholder="e.g. B.Tech CSE, XYZ University, 2024" onChange={handleChange} value={form.education} />
+              </div>
+            )}
+
             <div className="form-group">
               <label>Expected Salary</label>
               <input name="desiredSalary" placeholder="e.g. 8 LPA" onChange={handleChange} value={form.desiredSalary} />
             </div>
 
             {error && <div className="alert alert-error">{error}</div>}
-
             <div className="btn-row">
               <button type="button" className="btn-ghost" onClick={() => setStep(0)}>← Back</button>
               <button type="submit" className="btn-primary" disabled={loading}>
-                {loading ? "Creating…" : "Create Account"}
+                {loading ? "Creating account…" : "Create Account →"}
               </button>
             </div>
           </form>
         )}
 
-        <div className="auth-footer">
-          <p>Already have an account? <Link to="/login">Sign in</Link></p>
-        </div>
+        {/* ── Step 2: TOTP Setup ── */}
+        {step === 2 && (
+          <form onSubmit={handleTotpConfirm} className="auth-form">
+            <div style={{ textAlign: "center", marginBottom: "1rem" }}>
+              <p style={{ marginBottom: "1rem", fontSize: "0.9rem" }}>
+                Scan this QR code with <strong>Google Authenticator</strong> or <strong>Authy</strong>, then enter the 6-digit code below to activate 2FA.
+              </p>
+              {totpQr && (
+                <img src={totpQr} alt="TOTP QR Code" style={{ width: 200, height: 200, borderRadius: 8, border: "2px solid var(--border)" }} />
+              )}
+            </div>
+
+            <div className="form-group">
+              <label>6-Digit Authenticator Code *</label>
+              <input
+                type="text" inputMode="numeric" pattern="[0-9]{6}" maxLength={6}
+                placeholder="000000" value={totpToken}
+                onChange={(e) => setTotpToken(e.target.value)}
+                autoComplete="one-time-code"
+                style={{ letterSpacing: "0.3em", fontSize: "1.5rem", textAlign: "center" }}
+                required
+              />
+            </div>
+
+            {totpError && <div className="alert alert-error">{totpError}</div>}
+
+            <button type="submit" className="btn-primary" disabled={totpVerifying || totpToken.length !== 6}>
+              {totpVerifying ? "Verifying…" : "Confirm & Finish Setup"}
+            </button>
+          </form>
+        )}
+
+        {step < 2 && (
+          <div className="auth-footer">
+            <p>Already have an account? <Link to="/login">Login</Link></p>
+          </div>
+        )}
       </div>
     </div>
   );

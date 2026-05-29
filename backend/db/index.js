@@ -45,6 +45,9 @@ export const User = sequelize.define("User", {
   role:                      { type: DataTypes.STRING },
   experience:                { type: DataTypes.STRING },
   desiredSalary:             { type: DataTypes.STRING },
+  // Resume-extracted profile fields
+  skills:                    { type: DataTypes.TEXT },        // comma-separated or JSON string
+  education:                 { type: DataTypes.TEXT },        // free-text: "B.Tech CSE, XYZ, 2024"
 }, { tableName: "users", timestamps: true });
 
 export const Institution = sequelize.define("Institution", {
@@ -63,6 +66,16 @@ export const InterviewSession = sequelize.define("InterviewSession", {
   userId:               {
     type: DataTypes.INTEGER,
     allowNull: true,
+    isGuest: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: false,
+    },
+    guestEmail: {
+      type: DataTypes.STRING,
+    },
+    guestName: {
+      type: DataTypes.STRING,
+    },
     references: {
       model: "users",
       key: "id"

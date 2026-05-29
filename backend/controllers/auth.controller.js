@@ -10,79 +10,86 @@ const signToken = (payload) =>
   jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: "8h" });
 
 export const register = async (req, res) => {
-  const { firstName, lastName, email, password, accountType, enrollmentNumber } = req.body;
-  if (!firstName || !email || !password || !accountType)
-    return res.status(400).json({ message: "firstName, email, password and accountType are required" });
-
   try {
-    const existing = await User.findOne({ where: { email } });
-    if (existing) return res.status(409).json({ message: "Email already registered" });
+    const { firstName, lastName, email, password, accountType } = req.body;
 
-    let institutionId = null;
-    if (accountType === "student") {
-      const domain = email.split("@")[1];
-      const institutions = await Institution.findAll({ where: { approvalStatus: "ACTIVE" } });
-      const institution = institutions.find((i) => (i.allowedDomains || []).includes(domain));
-      if (!institution)
-        return res.status(403).json({ message: "Your institution email domain is not approved." });
-      if (institution.studentsRegistered >= institution.studentLimit)
-        return res.status(403).json({ message: "Institution student limit reached." });
-      institutionId = institution.id;
-      await institution.increment("studentsRegistered");
+    // Validate required fields (resume is OPTIONAL)
+    if (!firstName || !email || !password) {
+      return res.status(400).json({
+        message: "Missing required fields: firstName, email, password",
+      });
     }
 
-    const { domain, role, experience, desiredSalary } = req.body;
+    // Check if email exists
+    const existingUser = await User.findOne({ where: { email } });
+    if (existingUser) {
+      return res.status(409).json({ message: "Email already registered" });
+    }
 
-    // Handle resume file if provided
-    let resumeURL = null;
-    let resumeData = {};
+    // Handle resume upload (OPTIONAL - may fail or not be provided)
+    let resumeUrl = null;
+    let resumeData = null;
 
     if (req.file) {
-      // Validate PDF file
-      if (req.file.mimetype !== "application/pdf") {
-        return res.status(400).json({ message: "Only PDF files are allowed for resume" });
-      }
-
-      if (req.file.size > 5 * 1024 * 1024) {
-        return res.status(400).json({ message: "Resume file size must be less than 5MB" });
-      }
-
       try {
-        // Upload to Cloudinary
-        const fileName = `signup_${Date.now()}_${email.split("@")[0]}`;
-        const result = await uploadPDFToCloudinary(req.file.buffer, fileName);
-        resumeURL = result.secure_url;
+        // Try to upload resume, but don't fail registration if it fails
+        const uploadResult = await cloudinary.uploader.upload_stream(
+          { resource_type: "raw", folder: "resumes" },
+          async (error, result) => {
+            if (!error && result) {
+              resumeUrl = result.secure_url;
+            }
+          }
+        );
+        uploadResult.end(req.file.buffer);
 
-        // Parse PDF and extract information
-        try {
-          const extractedText = await parseResume(resumeURL);
-          resumeData = extractResumeInfo(extractedText);
-        } catch (parseErr) {
-          console.error("Resume parsing error:", parseErr);
-          // Continue even if parsing fails
+        // Parse resume if uploaded successfully
+        if (resumeUrl) {
+          try {
+            const text = await parseResume(req.file.buffer);
+            resumeData = extractResumeInfo(text);
+          } catch (parseErr) {
+            console.log("Resume parsing failed, continuing without it");
+          }
         }
       } catch (uploadErr) {
-        console.error("Resume upload error:", uploadErr);
-        return res.status(500).json({ message: "Failed to upload resume", error: uploadErr.message });
+        console.log("Resume upload failed, continuing without it");
       }
     }
 
-    const hashed = await bcrypt.hash(password, 12);
-    await User.create({
-      firstName, lastName, email, password: hashed,
-      accountType, enrollmentNumber: enrollmentNumber || null,
-      institutionId, institutionEmailVerified: false,
-      domain, role, experience, desiredSalary,
-      resumeURL,
-      resumeData: Object.keys(resumeData).length > 0 ? resumeData : {},
-      interviewProfile: { domain, role, experienceLevel: experience, salaryRange: desiredSalary }
+    // Hash password
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    // Create user (resume is optional)
+    const user = await User.create({
+      firstName,
+      lastName: lastName || "",
+      email,
+      password: hashedPassword,
+      accountType: accountType || "professional",
+      resumeUrl: resumeUrl || null,
+      resumeData: resumeData || {},
     });
 
-    sendVerificationEmail(email, firstName).catch(console.error);
-    res.status(201).json({ message: "Account created. You can now log in." });
-  } catch (err) {
-    console.error("Register error:", err);
-    res.status(500).json({ message: "Registration failed", error: err.message });
+    // Generate JWT
+    const token = jwt.sign({ id: user.id }, process.env.JWT_SECRET);
+
+    res.status(201).json({
+      success: true,
+      message: "Registration successful",
+      token,
+      user: {
+        id: user.id,
+        firstName: user.firstName,
+        email: user.email,
+      },
+    });
+  } catch (error) {
+    console.error("Registration error:", error);
+    res.status(500).json({
+      message: "Registration failed",
+      error: error.message,
+    });
   }
 };
 

@@ -1,213 +1,255 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { startInterview, submitAnswer } from "../services/interview.service.js";
 import { startSpeechRecognition } from "../hooks/useSpeechToText.js";
 import { getVoiceConfidence } from "../utils/voiceConfidence.js";
 
-const STATES = { PREVIEW: "preview", IDLE: "idle", LOADING: "loading", ACTIVE: "active", SUBMITTING: "submitting", DONE: "done" };
+const STATES = {
+  PREVIEW: "preview",   // camera/mic test — camera IS active here
+  IDLE: "idle",         // ready to start — camera still active
+  LOADING: "loading",
+  ACTIVE: "active",
+  SUBMITTING: "submitting",
+  DONE: "done",         // camera released immediately
+};
+
+function stopAllTracks(stream) {
+  if (stream) stream.getTracks().forEach((t) => t.stop());
+}
 
 export default function Interview() {
-  const [state, setState]       = useState(STATES.PREVIEW);
+  const [uiState, setUiState]     = useState(STATES.PREVIEW);
   const [sessionId, setSessionId] = useState(null);
-  const [question, setQuestion] = useState("");
-  const [qIndex, setQIndex]     = useState(0);
-  const [answer, setAnswer]     = useState("");
-  const [lastEval, setLastEval] = useState(null);
-  const [error, setError]       = useState("");
+  const [question, setQuestion]   = useState("");
+  const [qIndex, setQIndex]       = useState(0);
+  const [answer, setAnswer]       = useState("");
+  const [lastEval, setLastEval]   = useState(null);
+  const [error, setError]         = useState("");
   const [isRecording, setIsRecording] = useState(false);
   const [mediaStream, setMediaStream] = useState(null);
   const [mediaError, setMediaError]   = useState("");
   const [permGranted, setPermGranted] = useState(false);
-  const [audioLevel, setAudioLevel] = useState(0);
+  const [audioLevel, setAudioLevel]   = useState(0);
+  const [transcript, setTranscript]   = useState([]); // real-time transcription
 
-  const videoRef   = useRef(null);
-  const recognRef  = useRef(null);
-  const navigate   = useNavigate();
+  const videoRef    = useRef(null);
+  const recognRef   = useRef(null);
+  const navigate    = useNavigate();
   const analyserRef = useRef(null);
   const animFrameRef = useRef(null);
+  const audioCtxRef = useRef(null);
 
-  // Request camera+mic on mount
+  // ── Request camera + mic, set up audio monitor ──────────────────────────
   useEffect(() => {
+    let stream = null;
+
     navigator.mediaDevices
       .getUserMedia({ video: true, audio: true })
-      .then((stream) => {
-        setMediaStream(stream);
+      .then((s) => {
+        stream = s;
+        setMediaStream(s);
         setPermGranted(true);
-        if (videoRef.current) videoRef.current.srcObject = stream;
+        if (videoRef.current) videoRef.current.srcObject = s;
 
-        // Setup audio level monitoring
         try {
-          const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-          const analyser = audioContext.createAnalyser();
-          const source = audioContext.createMediaStreamSource(stream);
+          const ctx = new (window.AudioContext || window.webkitAudioContext)();
+          audioCtxRef.current = ctx;
+          const analyser = ctx.createAnalyser();
+          const source = ctx.createMediaStreamSource(s);
           source.connect(analyser);
           analyserRef.current = analyser;
 
-          // Monitor audio levels
-          const monitorAudio = () => {
-            const dataArray = new Uint8Array(analyser.frequencyBinCount);
-            analyser.getByteFrequencyData(dataArray);
-            const average = dataArray.reduce((a, b) => a + b) / dataArray.length;
-            setAudioLevel(Math.min(100, Math.round(average)));
-            animFrameRef.current = requestAnimationFrame(monitorAudio);
+          const monitor = () => {
+            const arr = new Uint8Array(analyser.frequencyBinCount);
+            analyser.getByteFrequencyData(arr);
+            const avg = arr.reduce((a, b) => a + b, 0) / arr.length;
+            setAudioLevel(Math.min(100, Math.round(avg)));
+            animFrameRef.current = requestAnimationFrame(monitor);
           };
-          monitorAudio();
-        } catch (err) {
-          console.error("Audio monitoring setup failed:", err);
+          monitor();
+        } catch (e) {
+          console.warn("Audio monitor setup failed:", e);
         }
       })
-      .catch(() => setMediaError("Camera & microphone access is required for the interview."));
+      .catch((err) => {
+        console.error("getUserMedia error:", err);
+        setMediaError("Camera & microphone access is required. Please allow access and reload.");
+      });
 
     return () => {
       recognRef.current?.stop();
       if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+      if (audioCtxRef.current) audioCtxRef.current.close().catch(() => {});
+      // Only stop tracks on full unmount — we manage release via releaseCamera()
+      if (stream) stopAllTracks(stream);
     };
   }, []);
 
-  // Cleanup media stream on component unmount
-  useEffect(() => {
-    return () => {
-      if (mediaStream) {
-        mediaStream.getTracks().forEach(track => track.stop());
-      }
-    };
+  // ── Release camera immediately once interview is done ──────────────────
+  const releaseCamera = useCallback(() => {
+    if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+    if (audioCtxRef.current) { audioCtxRef.current.close().catch(() => {}); audioCtxRef.current = null; }
+    stopAllTracks(mediaStream);
+    setMediaStream(null);
+    setPermGranted(false);
+    if (videoRef.current) videoRef.current.srcObject = null;
   }, [mediaStream]);
 
+  // ── Proceed from preview ──────────────────────────────────────────────
+  const proceedFromPreview = () => {
+    if (mediaError) return setError(mediaError);
+    setUiState(STATES.IDLE);
+    setError("");
+  };
+
+  // ── Start interview ──────────────────────────────────────────────────
   const handleStart = async () => {
     if (mediaError) return setError(mediaError);
-    setError(""); setState(STATES.LOADING);
+    setError(""); setUiState(STATES.LOADING);
     try {
       const { data } = await startInterview();
       setSessionId(data.sessionId);
       setQuestion(data.question || "");
       setQIndex(1);
-      setState(STATES.ACTIVE);
+      setUiState(STATES.ACTIVE);
     } catch (err) {
       setError(err.response?.data?.message || "Failed to start. Check your profile & resume.");
-      setState(STATES.PREVIEW);
+      setUiState(STATES.PREVIEW);
     }
   };
 
-  const proceedFromPreview = () => {
-    if (mediaError) return setError(mediaError);
-    setState(STATES.IDLE);
-    setError("");
-  };
-
+  // ── Speech recognition + real-time transcription ────────────────────
   const toggleSpeech = () => {
     if (isRecording) {
       recognRef.current?.stop();
       recognRef.current = null;
       setIsRecording(false);
     } else {
-      recognRef.current = startSpeechRecognition((text) => setAnswer(text));
+      recognRef.current = startSpeechRecognition((text, isFinal) => {
+        setAnswer(text);
+        // Update real-time transcription panel
+        setTranscript((prev) => {
+          const updated = [...prev];
+          const last = updated[updated.length - 1];
+          if (last && last.interim) {
+            updated[updated.length - 1] = { ...last, text, interim: !isFinal };
+          } else if (!isFinal) {
+            updated.push({ questionIndex: qIndex, question, text, interim: true });
+          } else {
+            // Replace last interim or add final
+            if (last && last.interim) {
+              updated[updated.length - 1] = { questionIndex: qIndex, question, text, interim: false };
+            } else {
+              updated.push({ questionIndex: qIndex, question, text, interim: false });
+            }
+          }
+          return updated;
+        });
+      });
       setIsRecording(true);
     }
   };
 
+  // ── Submit answer ────────────────────────────────────────────────────
   const handleSubmit = async () => {
     if (!answer.trim()) return setError("Please provide an answer before submitting.");
-    setError(""); setState(STATES.SUBMITTING);
+    setError(""); setUiState(STATES.SUBMITTING);
 
     recognRef.current?.stop(); recognRef.current = null; setIsRecording(false);
+
+    // Finalise transcript entry for this question
+    if (answer.trim()) {
+      setTranscript((prev) => {
+        const filtered = prev.filter((t) => !t.interim);
+        const alreadyHas = filtered.some((t) => t.questionIndex === qIndex);
+        if (alreadyHas) return filtered;
+        return [...filtered, { questionIndex: qIndex, question, text: answer, interim: false }];
+      });
+    }
 
     let voice = 5;
     try { voice = Math.round((await getVoiceConfidence(mediaStream)) * 10); } catch (_) {}
 
     try {
-      const { data } = await submitAnswer({
-        sessionId,
-        answerText: answer,
-        confidence: { voice, facial: 7 },
-      });
-
+      const { data } = await submitAnswer({ sessionId, answerText: answer, confidence: { voice, facial: 7 } });
       setLastEval(data.evaluation);
       setAnswer("");
 
       if (data.completed) {
-        setState(STATES.DONE);
-        // Stop all media tracks immediately when interview is done
-        if (mediaStream) {
-          mediaStream.getTracks().forEach(track => track.stop());
-          setMediaStream(null);
-          setPermGranted(false);
-        }
-        if (videoRef.current) {
-          videoRef.current.srcObject = null;
-        }
+        releaseCamera(); // ← camera off as soon as interview ends
+        setUiState(STATES.DONE);
         setTimeout(() => navigate(`/report/${sessionId}`), 2500);
       } else {
         setQuestion(data.nextQuestion || "");
         setQIndex((n) => n + 1);
-        setState(STATES.ACTIVE);
+        setUiState(STATES.ACTIVE);
       }
     } catch (err) {
       setError(err.response?.data?.message || "Submission failed. Try again.");
-      setState(STATES.ACTIVE);
+      setUiState(STATES.ACTIVE);
     }
   };
 
-  // ── RENDER ─────────────────────────────────────────────────────────────
+  const inInterview = uiState === STATES.ACTIVE || uiState === STATES.SUBMITTING;
+  const showCamera  = uiState !== STATES.DONE;
+
+  // ── RENDER ────────────────────────────────────────────────────────────
   return (
     <div className="page-container">
       <div className="interview-layout">
 
-        {/* Left — camera + controls */}
+        {/* ── Left sidebar: camera + controls ── */}
         <div className="interview-sidebar">
-          <div className="camera-box">
-            {permGranted ? (
-              <video ref={videoRef} autoPlay muted playsInline className="camera-feed" />
-            ) : (
-              <div className="camera-placeholder">
-                <span style={{ fontSize: "2.5rem" }}>📷</span>
-                <p>{mediaError || "Requesting camera access…"}</p>
+          {showCamera && (
+            <div className="camera-box">
+              {permGranted ? (
+                <video ref={videoRef} autoPlay muted playsInline className="camera-feed" />
+              ) : (
+                <div className="camera-placeholder">
+                  <span style={{ fontSize: "2.5rem" }}>📷</span>
+                  <p style={{ fontSize: "0.8rem", textAlign: "center", padding: "0.5rem" }}>
+                    {mediaError || "Requesting camera…"}
+                  </p>
+                </div>
+              )}
+              <div className={`cam-status ${permGranted ? "cam-on" : "cam-off"}`}>
+                {permGranted ? "● Live" : "○ No camera"}
               </div>
-            )}
-            <div className={`cam-status ${permGranted ? "cam-on" : "cam-off"}`}>
-              {permGranted ? "● Live" : "○ No camera"}
             </div>
-          </div>
+          )}
 
-          {/* Audio level indicator */}
-          {state === STATES.PREVIEW && permGranted && (
+          {/* Mic level — shown during preview AND active */}
+          {(uiState === STATES.PREVIEW || inInterview) && permGranted && (
             <div className="audio-indicator card" style={{ marginTop: "1rem" }}>
-              <p style={{ fontSize: "0.8rem", marginBottom: "0.5rem", fontWeight: 500 }}>🔊 Microphone Test</p>
-              <div style={{
-                background: "var(--bg-secondary)",
-                borderRadius: "4px",
-                height: "8px",
-                overflow: "hidden",
-                marginBottom: "0.5rem"
-              }}>
+              <p style={{ fontSize: "0.8rem", marginBottom: "0.5rem", fontWeight: 500 }}>🔊 Microphone</p>
+              <div style={{ background: "var(--bg-secondary)", borderRadius: 4, height: 8, overflow: "hidden", marginBottom: "0.5rem" }}>
                 <div style={{
                   background: audioLevel > 70 ? "#ef4444" : audioLevel > 40 ? "#f59e0b" : "#10b981",
-                  height: "100%",
-                  width: `${audioLevel}%`,
-                  transition: "width 0.1s"
+                  height: "100%", width: `${audioLevel}%`, transition: "width 0.1s",
                 }} />
               </div>
               <p style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>
-                {audioLevel > 70 ? "🔴 Loud" : audioLevel > 40 ? "🟡 Good" : "🟢 Quiet"}
+                {audioLevel > 70 ? "🔴 Too loud" : audioLevel > 15 ? "🟢 Good" : "⚪ Quiet / Speak now"}
               </p>
             </div>
           )}
 
-          {state === STATES.ACTIVE && (
+          {inInterview && (
             <div className="sidebar-controls">
               <div className={`rec-indicator ${isRecording ? "pulsing" : ""}`}>
-                {isRecording ? "🔴 Recording…" : "⬜ Microphone off"}
+                {isRecording ? "🔴 Recording…" : "⬜ Mic off"}
               </div>
               <button
                 className={isRecording ? "btn-ghost" : "btn-primary"}
                 style={{ marginBottom: "0.5rem" }}
                 onClick={toggleSpeech}
               >
-                {isRecording ? "⏹ Stop Recording" : "🎤 Start Speaking"}
+                {isRecording ? "⏹ Stop" : "🎤 Speak"}
               </button>
             </div>
           )}
 
-          {lastEval && state === STATES.ACTIVE && (
+          {lastEval && inInterview && (
             <div className="eval-sidebar card">
               <p style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginBottom: "0.5rem" }}>Last answer</p>
               <div className="score-row"><span>Overall</span><strong>{lastEval.overallScore}/10</strong></div>
@@ -217,93 +259,121 @@ export default function Interview() {
           )}
         </div>
 
-        {/* Right — question + answer */}
+        {/* ── Right main panel ── */}
         <div className="interview-main">
 
-          {state === STATES.PREVIEW && (
+          {/* PREVIEW STATE */}
+          {uiState === STATES.PREVIEW && (
             <div className="interview-start card">
               <div style={{ fontSize: "3rem", textAlign: "center", marginBottom: "1rem" }}>📹</div>
-              <h2>Camera & Microphone Preview</h2>
-              <p>Your camera and microphone are ready. You should see yourself in the video on the left and hear yourself speaking.</p>
-              {mediaError && <div className="alert alert-error">{mediaError}</div>}
-              {error && <div className="alert alert-error">{error}</div>}
-              <div style={{ marginTop: "1.5rem", padding: "1rem", background: "var(--bg-secondary)", borderRadius: "8px" }}>
-                <p style={{ fontSize: "0.9rem", marginBottom: "0.8rem" }}>✓ Camera is working: {permGranted ? "Yes" : "No"}</p>
-                <p style={{ fontSize: "0.9rem" }}>✓ Microphone is working: Speak and watch the audio level above</p>
+              <h2>Camera & Microphone Check</h2>
+              <p>Before we begin, verify your camera and mic are working correctly.</p>
+
+              <div style={{ marginTop: "1rem", padding: "1rem", background: "var(--bg-secondary)", borderRadius: 8 }}>
+                <p style={{ marginBottom: "0.6rem" }}>
+                  {permGranted
+                    ? "✅ Camera detected — you should see yourself on the left"
+                    : "❌ Camera not detected"}
+                </p>
+                <p>
+                  {audioLevel > 15
+                    ? "✅ Microphone active — speak to see the level rise"
+                    : "🔇 Speak into your mic to test it (level shown above)"}
+                </p>
               </div>
-              <button className="btn-primary" style={{ marginTop: "1.5rem", width: "100%" }} onClick={proceedFromPreview} disabled={!!mediaError}>
-                Proceed to Interview →
+
+              {mediaError && <div className="alert alert-error" style={{ marginTop: "1rem" }}>{mediaError}</div>}
+              {error && <div className="alert alert-error">{error}</div>}
+
+              <button
+                className="btn-primary"
+                style={{ marginTop: "1.5rem", width: "100%" }}
+                onClick={proceedFromPreview}
+                disabled={!!mediaError}
+              >
+                {permGranted ? "Everything Looks Good — Continue →" : "Continue Without Camera"}
               </button>
             </div>
           )}
 
-          {state === STATES.IDLE && (
+          {/* IDLE STATE */}
+          {uiState === STATES.IDLE && (
             <div className="interview-start card">
               <div style={{ fontSize: "3rem", textAlign: "center", marginBottom: "1rem" }}>🎯</div>
-
               <h2>Ready for your mock interview?</h2>
-              <p>Make sure your camera and microphone are enabled. The AI will generate personalised questions from your profile and resume.</p>
+              <p>The AI will generate personalised questions based on your profile, resume, preferred role, and expected salary.</p>
               {mediaError && <div className="alert alert-error">{mediaError}</div>}
-              {error      && <div className="alert alert-error">{error}</div>}
-              <button className="btn-primary" style={{ marginTop: "1.5rem" }} onClick={handleStart} disabled={!!mediaError}>
+              {error && <div className="alert alert-error">{error}</div>}
+              <button className="btn-primary" style={{ marginTop: "1.5rem" }} onClick={handleStart}>
                 Start Interview
               </button>
             </div>
           )}
 
-          {state === STATES.LOADING && (
+          {/* LOADING */}
+          {uiState === STATES.LOADING && (
             <div className="card" style={{ textAlign: "center", padding: "3rem" }}>
               <div className="spinner" />
-              <p style={{ marginTop: "1rem" }}>Generating your personalised questions…</p>
+              <p style={{ marginTop: "1rem" }}>Tailoring questions to your profile…</p>
             </div>
           )}
 
-          {(state === STATES.ACTIVE || state === STATES.SUBMITTING) && (
+          {/* ACTIVE / SUBMITTING */}
+          {inInterview && (
             <>
               <div className="question-card card">
                 <div className="q-meta">
                   <span className="badge badge-blue">Question {qIndex}</span>
                 </div>
-                <h2 style={{ marginTop: "0.75rem", color: "var(--text)", lineHeight: 1.45 }}>
-                  {question}
-                </h2>
+                <h2 style={{ marginTop: "0.75rem", color: "var(--text)", lineHeight: 1.45 }}>{question}</h2>
               </div>
 
               <div className="answer-area">
                 <label className="form-group" style={{ marginBottom: 0 }}>
                   <span style={{ fontWeight: 600, fontSize: "0.9rem" }}>Your Answer</span>
                   <textarea
-                    rows={6}
-                    value={answer}
+                    rows={6} value={answer}
                     onChange={(e) => setAnswer(e.target.value)}
                     placeholder="Speak or type your answer here…"
                     style={{ marginTop: "0.5rem", resize: "vertical", minHeight: 120 }}
-                    disabled={state === STATES.SUBMITTING}
+                    disabled={uiState === STATES.SUBMITTING}
                   />
                 </label>
 
                 {error && <div className="alert alert-error">{error}</div>}
 
                 <button
-                  className="btn-primary"
-                  onClick={handleSubmit}
-                  disabled={state === STATES.SUBMITTING || !answer.trim()}
+                  className="btn-primary" onClick={handleSubmit}
+                  disabled={uiState === STATES.SUBMITTING || !answer.trim()}
                 >
-                  {state === STATES.SUBMITTING ? (
+                  {uiState === STATES.SUBMITTING ? (
                     <span style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "0.5rem" }}>
                       <span className="spinner-sm" /> Evaluating…
                     </span>
                   ) : "Submit Answer →"}
                 </button>
               </div>
+
+              {/* Live transcription panel */}
+              {transcript.length > 0 && (
+                <div className="card" style={{ marginTop: "1rem", maxHeight: 200, overflowY: "auto" }}>
+                  <p style={{ fontSize: "0.8rem", fontWeight: 600, marginBottom: "0.5rem", color: "var(--text-muted)" }}>📝 Live Transcription</p>
+                  {transcript.map((t, i) => (
+                    <p key={i} style={{ fontSize: "0.85rem", color: t.interim ? "var(--text-muted)" : "var(--text)", fontStyle: t.interim ? "italic" : "normal", marginBottom: "0.25rem" }}>
+                      {t.interim ? `…${t.text}` : `Q${t.questionIndex}: ${t.text}`}
+                    </p>
+                  ))}
+                </div>
+              )}
             </>
           )}
 
-          {state === STATES.DONE && (
+          {/* DONE */}
+          {uiState === STATES.DONE && (
             <div className="card" style={{ textAlign: "center", padding: "3rem", animation: "slideUp 0.4s ease" }}>
               <div style={{ fontSize: "3rem" }}>🎉</div>
               <h2>Interview Complete!</h2>
-              <p>Generating your personalised report…</p>
+              <p>Camera has been released. Generating your personalised report…</p>
               <div className="spinner" style={{ margin: "1.5rem auto" }} />
             </div>
           )}
@@ -312,4 +382,3 @@ export default function Interview() {
     </div>
   );
 }
-

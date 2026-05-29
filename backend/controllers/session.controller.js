@@ -1,6 +1,7 @@
 import { InterviewSession, User } from "../db/index.js";
 import { generateQuestion, evaluateAnswer, synthesizeFinalReport } from "../services/gemini.service.js";
-import { sendInterviewCompletionEmail } from "../services/email.service.js";
+import { analyzeInterview } from "../services/analysis.service.js";
+import { sendInterviewCompletionEmail, sendTranscriptionEmail } from "../services/email.service.js";
 import { parseResume } from "../services/resumeParser.js";
 
 export const startInterview = async (req, res) => {
@@ -38,10 +39,12 @@ export const startInterview = async (req, res) => {
     const questionPromises = Array.from({ length: 5 }, (_, i) =>
       generateQuestion({
         domain: profile.domain,
+        role: profile.role || user.role || null,
         experienceLevel: profile.experienceLevel,
         salaryRange: profile.salaryRange,
         language: profile.language || "en",
         resumeText,
+        skills: user.skills || null,
       }).catch(() => `Tell me about your experience with ${profile.domain} (Q${i + 1})`)
     );
     const generated = await Promise.all(questionPromises);
@@ -121,8 +124,14 @@ export const submitAnswer = async (req, res) => {
     let finalReport = session.finalReport || {};
 
     if (isComplete) {
-      // Synthesize a real final report via Gemini
-      const synthesis = await synthesizeFinalReport({ questions, domain: session.domain });
+      // Use rich analysis service for final report
+      const synthesis = await analyzeInterview({
+        questions,
+        domain: session.domain,
+        role: user?.interviewProfile?.role || user?.role || null,
+        experienceLevel: user?.interviewProfile?.experienceLevel || null,
+        salaryRange: session.salaryRange,
+      });
 
       // Progress comparison
       const previousSessions = await InterviewSession.findAll({
@@ -151,6 +160,15 @@ export const submitAnswer = async (req, res) => {
           name: user.firstName,
           sessionId: session.id,
           performanceCategory: synthesis.confidenceLevel,
+        }).catch(console.error);
+
+        // Send full transcription + report email (WisprFlow-style)
+        sendTranscriptionEmail({
+          to: user.email,
+          name: user.firstName,
+          sessionId: session.id,
+          transcript: questions,
+          report: finalReport,
         }).catch(console.error);
 
         if (user.accountType === "guest") {

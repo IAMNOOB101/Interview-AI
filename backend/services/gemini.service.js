@@ -17,22 +17,26 @@ const safeJSON = (text) => {
 
 export const generateQuestion = async ({
   domain,
+  role = null,
   experienceLevel,
   salaryRange,
   language = "en",
   previousAnswer = null,
   resumeText = null,
+  skills = null,
 }) => {
   const prompt = `You are a professional interview question generator.
 
-Role/Domain: ${domain}
+Role/Domain: ${role ? `${role} (${domain})` : domain}
 Experience level: ${experienceLevel}
 Salary range: ${salaryRange?.min || "N/A"} – ${salaryRange?.max || "N/A"} LPA
 Language: ${language}
+${skills ? `\nCandidate skills: ${Array.isArray(skills) ? skills.join(", ") : skills}` : ""}
 ${previousAnswer ? `\nPrevious candidate answer: "${previousAnswer}"\nGenerate a relevant follow-up question.` : ""}
 ${resumeText ? `\nCandidate resume context:\n${resumeText.slice(0, 1500)}` : ""}
 
-Generate ONE concise, specific interview question. Return only the question text, no preamble.`;
+Calibrate question difficulty based on the salary range — higher salary = harder, deeper questions.
+Generate ONE concise, specific interview question for this role. Return only the question text, no preamble.`;
 
   try {
     const result = await model.generateContent(prompt);

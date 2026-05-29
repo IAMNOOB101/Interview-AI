@@ -83,6 +83,32 @@ export default function InterviewReport() {
           </ul>
         </div>
 
+        {/* Recommendations */}
+        {(report.recommendations || []).length > 0 && (
+          <div className="card" style={{ gridColumn: "1 / -1" }}>
+            <h3 style={{ color: "var(--primary)", marginBottom: "0.75rem" }}>📌 Recommendations</h3>
+            <ul style={{ paddingLeft: "1.25rem", lineHeight: 2 }}>
+              {report.recommendations.map((r, i) => <li key={i} style={{ color: "var(--text)" }}>{r}</li>)}
+            </ul>
+          </div>
+        )}
+
+        {/* Key Insight */}
+        {report.keyInsight && (
+          <div className="card" style={{ gridColumn: "1 / -1", background: "linear-gradient(135deg, var(--primary-dim, #ede9fe), var(--bg))", borderLeft: "4px solid var(--primary)" }}>
+            <p style={{ margin: 0, fontWeight: 600, fontSize: "1rem" }}>💡 Key Insight</p>
+            <p style={{ margin: "0.5rem 0 0", color: "var(--text)" }}>{report.keyInsight}</p>
+          </div>
+        )}
+
+        {/* Salary Readiness */}
+        {report.salaryReadiness && (
+          <div className="card">
+            <h3 style={{ marginBottom: "0.5rem" }}>💰 Salary Readiness</h3>
+            <p style={{ color: "var(--text)", margin: 0 }}>{report.salaryReadiness}</p>
+          </div>
+        )}
+
         {/* Score bars */}
         <div className="card">
           <h3 style={{ marginBottom: "1rem" }}>Score Breakdown</h3>
